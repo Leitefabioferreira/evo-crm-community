@@ -21,12 +21,16 @@ server {
 
     # =============================================================================
     # Upstream targets as variables
+    #
+    # Hosts/ports are rendered at container start by envsubst from the
+    # *_UPSTREAM env vars (see Dockerfile for defaults). Override them
+    # when the backend service names in your stack differ from the defaults.
     # =============================================================================
-    set $auth_service      http://evo_auth:3001;
-    set $evoai_service     http://evo_core:5555;
-    set $crm_service       http://evo_crm:3000;
-    set $processor_service http://evo_processor:8000;
-    set $bot_runtime_service http://evo_bot_runtime:8080;
+    set $auth_service        http://${AUTH_UPSTREAM};
+    set $evoai_service       http://${CORE_UPSTREAM};
+    set $crm_service         http://${CRM_UPSTREAM};
+    set $processor_service   http://${PROCESSOR_UPSTREAM};
+    set $bot_runtime_service http://${BOT_RUNTIME_UPSTREAM};
 
     underscores_in_headers on;
 
