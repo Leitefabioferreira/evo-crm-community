@@ -189,7 +189,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5555/api/v1/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5555/health"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -291,6 +291,41 @@ services:
       retries: 3
       start_period: 15s
 
+  # ---------------------------------------------------------------------------
+  # Evolution Go — WhatsApp API (Go) — Port 4000
+  # ---------------------------------------------------------------------------
+  evolution-go:
+    image: evoapicloud/evolution-go:latest
+    container_name: evolution-go
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      SERVER_PORT: "4000"
+      CLIENT_NAME: evolution
+      GLOBAL_API_KEY: ${EVOLUTION_GO_API_KEY:-y5T27d2jMXJCZ9cSFq80R0JKkEkTEyrP3IvgtDIIKfk=}
+      POSTGRES_AUTH_DB: "postgresql://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD:-evoai_dev_password}@postgres:5432/evogo_auth?sslmode=disable"
+      POSTGRES_USERS_DB: "postgresql://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD:-evoai_dev_password}@postgres:5432/evogo_users?sslmode=disable"
+      DATABASE_SAVE_MESSAGES: "true"
+      CONNECT_ON_STARTUP: "false"
+      WEBHOOKFILES: "true"
+      QRCODE_MAX_COUNT: "5"
+      CHECK_USER_EXISTS: "true"
+      LOG_DIRECTORY: /app/logs
+      TZ: ${TZ:-America/Sao_Paulo}
+    volumes:
+      - evolution_go_data:/app/dbdata
+      - evolution_go_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4000/manager/login"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
 volumes:
   postgres_data:
   redis_data:
@@ -298,3 +333,5 @@ volumes:
   crm_node_modules:
   crm_cache:
   processor_logs:
+  evolution_go_data:
+  evolution_go_logs:
