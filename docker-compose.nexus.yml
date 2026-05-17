@@ -8,8 +8,8 @@ services:
     env_file: .env.nexus
     environment:
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
-      OPENAI_MODEL: "deepseek/deepseek-v4-flash:free"
-    command: ["bash", "-c", "pip3 install pyyaml websocket-client flask-limiter --break-system-packages -q 2>/dev/null || true; CLAUDE_BIN=$(find /usr/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai /workspace/dashboard/terminal-server/node_modules/@anthropic-ai -type f -name claude 2>/dev/null | grep -v '__pycache__\\|\\.js$' | head -1); [ -n \"$CLAUDE_BIN\" ] && ln -sf \"$CLAUDE_BIN\" /usr/bin/claude && echo \"[boot] claude -> $CLAUDE_BIN\" || echo '[boot] AVISO: claude binary nao encontrado'; sed -i 's/^model: sonnet$/model: haiku/' /workspace/.claude/agents/oracle.md 2>/dev/null || true; python3 /boot/nexus-boot.py; exec bash /usr/local/bin/start-dashboard.sh"]
+      OPENAI_MODEL: "gpt-4o-mini"
+    command: ["bash", "-c", "pip3 install pyyaml websocket-client flask-limiter --break-system-packages -q 2>/dev/null || true; CLAUDE_BIN=$(find /usr/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai /workspace/dashboard/terminal-server/node_modules/@anthropic-ai -type f -name claude 2>/dev/null | grep -v '__pycache__\\|\\.js$' | head -1); [ -n \"$CLAUDE_BIN\" ] && ln -sf \"$CLAUDE_BIN\" /usr/bin/claude && echo \"[boot] claude -> $CLAUDE_BIN\" || echo '[boot] AVISO: claude binary nao encontrado'; python3 /boot/nexus-boot.py; exec bash /usr/local/bin/start-dashboard.sh"]
     volumes:
       - nexus_config:/workspace/config
       - nexus_workspace:/workspace/workspace
@@ -48,7 +48,7 @@ services:
     environment:
       SERVICE_TYPE: scheduler
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
-      OPENAI_MODEL: "deepseek/deepseek-v4-flash:free"
+      OPENAI_MODEL: "gpt-4o-mini"
     command: ["bash", "-c", "python3 /workspace/config/scheduler-boot.py 2>/dev/null || true; uv run python scheduler.py"]
     volumes:
       - nexus_config:/workspace/config

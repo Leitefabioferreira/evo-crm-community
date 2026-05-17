@@ -65,12 +65,14 @@ else:
     old4 = '            stdout, stderr = proc.communicate(timeout=timeout_seconds)'
     new4 = '            stdout, stderr = proc.communicate(input=prompt, timeout=timeout_seconds)'
 
-    # Patch 5: add --allowedTools + --bare to enable autonomous tool use without permission issues
-    old5 = '        "--print",\n        "--max-turns", str(max_turns),\n'
-    new5 = '        "--print",\n        "--allowedTools", "Bash(*) Read(*) Write(*) Edit(*) Skill(*) Agent(*)",\n        "--bare",\n        "--max-turns", str(max_turns),\n'
+    # Patch 5: add --bare, remove --dangerously-skip-permissions
+    # --allowedTools is NOT used (Bash(*) wildcard triggers bypassPermissions mode which fails as root)
+    # Tool permissions are handled by /workspace/.claude/settings.json permissions.allow list
+    old5 = '        "--print",\n        "--max-turns", str(max_turns),\n        "--dangerously-skip-permissions",\n        "--output-format", "json",\n'
+    new5 = '        "--print",\n        "--bare",\n        "--max-turns", str(max_turns),\n        "--output-format", "json",\n'
 
-    # Patch 6: inject OPENROUTER_API_KEY as OPENAI_API_KEY only for the Claude subprocess,
-    # avoiding conflict with the container-level OPENAI_API_KEY used by Whisper transcription.
+    # Patch 6: multi-provider fallback + IS_SANDBOX bypass
+    # Chain: OpenAI direct → OpenRouter paid → OpenRouter free
     old6 = ('        proc = subprocess.Popen(\n'
             '            cmd,\n'
             '            stdin=subprocess.PIPE,\n'
@@ -80,16 +82,115 @@ else:
             '            cwd=str(WORKSPACE),\n'
             '            start_new_session=True,  # new process group for clean kill\n'
             '        )')
-    new6 = ('        _claude_env = dict(os.environ)\n'
-            '        if os.environ.get("CLAUDE_CODE_USE_OPENAI") == "1" and os.environ.get("OPENROUTER_API_KEY"):\n'
-            '            _claude_env["OPENAI_API_KEY"] = os.environ["OPENROUTER_API_KEY"]\n'
+    new6 = ('        import urllib.request as _urllib_req, urllib.error as _urllib_err, json as _json_p, logging as _log_p\n'
+            '        _log_hb = _log_p.getLogger("heartbeat_runner")\n'
+            '\n'
+            '        def _check_openai_compat(base_url, api_key, model):\n'
+            '            """Pre-flight for OpenAI-compatible endpoints (OpenAI, OpenRouter)."""\n'
+            '            try:\n'
+            '                body = _json_p.dumps({"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode()\n'
+            '                req = _urllib_req.Request(f"{base_url}/chat/completions", data=body,\n'
+            '                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})\n'
+            '                with _urllib_req.urlopen(req, timeout=8) as r:\n'
+            '                    return r.status < 500\n'
+            '            except _urllib_err.HTTPError as ex:\n'
+            '                return ex.code not in (401, 402, 403, 429)\n'
+            '            except Exception:\n'
+            '                return False\n'
+            '\n'
+            '        def _check_anthropic(api_key):\n'
+            '            """Pre-flight for Anthropic API (different auth/format from OpenAI)."""\n'
+            '            try:\n'
+            '                body = _json_p.dumps({"model": "claude-haiku-4-5", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode()\n'
+            '                req = _urllib_req.Request("https://api.anthropic.com/v1/messages", data=body,\n'
+            '                    headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"})\n'
+            '                with _urllib_req.urlopen(req, timeout=8) as r:\n'
+            '                    return r.status < 500\n'
+            '            except _urllib_err.HTTPError as ex:\n'
+            '                return ex.code not in (401, 402, 403, 429)\n'
+            '            except Exception:\n'
+            '                return False\n'
+            '\n'
+            '        # Provider chain — each entry: (label, check_fn, env_builder, cmd_modifier)\n'
+            '        # check_fn()      → bool: True = provider available\n'
+            '        # env_builder()   → dict: subprocess env\n'
+            '        # cmd_modifier()  → list: cmd with binary adjusted if needed\n'
+            '        _openai_key    = os.environ.get("OPENAI_API_KEY", "")\n'
+            '        _anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")\n'
+            '        _openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")\n'
+            '        _claude_bin_path = shutil.which("claude") or ""\n'
+            '\n'
+            '        def _env_openai_compat(base_url, api_key, model):\n'
+            '            e = dict(os.environ)\n'
+            '            e["IS_SANDBOX"] = "1"\n'
+            '            e["CLAUDE_CODE_USE_OPENAI"] = "1"\n'
+            '            e["OPENAI_BASE_URL"] = base_url\n'
+            '            e["OPENAI_API_KEY"] = api_key\n'
+            '            e["OPENAI_MODEL"] = model\n'
+            '            return e\n'
+            '\n'
+            '        def _env_anthropic(api_key):\n'
+            '            e = dict(os.environ)\n'
+            '            e["IS_SANDBOX"] = "1"\n'
+            '            e.pop("CLAUDE_CODE_USE_OPENAI", None)\n'
+            '            e["ANTHROPIC_API_KEY"] = api_key\n'
+            '            return e\n'
+            '\n'
+            '        _provider_chain = [\n'
+            '            # 1: OpenAI direct (sem intermediário, mais barato)\n'
+            '            ("OpenAI-direct/gpt-4o-mini",\n'
+            '             lambda: bool(_openai_key) and _check_openai_compat("https://api.openai.com/v1", _openai_key, "gpt-4o-mini"),\n'
+            '             lambda: _env_openai_compat("https://api.openai.com/v1", _openai_key, "gpt-4o-mini"),\n'
+            '             lambda c: c),\n'
+            '            # 2: Anthropic direct (claude-haiku-4-5) — ativo quando tiver crédito\n'
+            '            ("Anthropic-direct/claude-haiku-4-5",\n'
+            '             lambda: bool(_anthropic_key) and _check_anthropic(_anthropic_key),\n'
+            '             lambda: _env_anthropic(_anthropic_key),\n'
+            '             lambda c: [_claude_bin_path] + c[1:] if _claude_bin_path else c),\n'
+            '            # 3: OpenRouter pago → gpt-4o-mini\n'
+            '            ("OpenRouter/gpt-4o-mini",\n'
+            '             lambda: bool(_openrouter_key) and _check_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "openai/gpt-4o-mini"),\n'
+            '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "openai/gpt-4o-mini"),\n'
+            '             lambda c: c),\n'
+            '            # 4: OpenRouter → Claude haiku (usa saldo OpenRouter para pagar Anthropic)\n'
+            '            ("OpenRouter/claude-haiku-4-5",\n'
+            '             lambda: bool(_openrouter_key) and _check_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "anthropic/claude-haiku-4-5"),\n'
+            '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "anthropic/claude-haiku-4-5"),\n'
+            '             lambda c: c),\n'
+            '            # 5: OpenRouter free — Gemini\n'
+            '            ("OpenRouter-free/gemini-2.5-flash",\n'
+            '             lambda: bool(_openrouter_key) and _check_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "google/gemini-2.5-flash-preview-05-14:free"),\n'
+            '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "google/gemini-2.5-flash-preview-05-14:free"),\n'
+            '             lambda c: c),\n'
+            '            # 6: OpenRouter free — DeepSeek (último recurso)\n'
+            '            ("OpenRouter-free/deepseek-v4-flash",\n'
+            '             lambda: bool(_openrouter_key),\n'
+            '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "deepseek/deepseek-v4-flash:free"),\n'
+            '             lambda c: c),\n'
+            '        ]\n'
+            '\n'
+            '        _selected_env = None\n'
+            '        _selected_cmd = cmd\n'
+            '        for _label, _check, _mk_env, _mk_cmd in _provider_chain:\n'
+            '            try:\n'
+            '                if _check():\n'
+            '                    _selected_env = _mk_env()\n'
+            '                    _selected_cmd = _mk_cmd(list(cmd))\n'
+            '                    _log_hb.info(f"[provider] {_label} selecionado")\n'
+            '                    print(f"[provider] {_label}", flush=True)\n'
+            '                    break\n'
+            '            except Exception as _e:\n'
+            '                _log_hb.warning(f"[provider] {_label} check falhou: {_e}")\n'
+            '        if _selected_env is None:\n'
+            '            _selected_env = _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "deepseek/deepseek-v4-flash:free")\n'
+            '            print("[provider] fallback final: deepseek free", flush=True)\n'
             '        proc = subprocess.Popen(\n'
-            '            cmd,\n'
+            '            _selected_cmd,\n'
             '            stdin=subprocess.PIPE,\n'
             '            stdout=subprocess.PIPE,\n'
             '            stderr=subprocess.PIPE,\n'
             '            text=True,\n'
-            '            env=_claude_env,\n'
+            '            env=_selected_env,\n'
             '            cwd=str(WORKSPACE),\n'
             '            start_new_session=True,  # new process group for clean kill\n'
             '        )')
@@ -115,6 +216,15 @@ else:
         if old in t:
             t = t.replace(old, new)
             changed += 1
+
+    # Safety cleanup: always remove --dangerously-skip-permissions (fails as root)
+    # and --allowedTools wildcard (Bash(*) triggers bypassPermissions mode which also fails as root)
+    if '"--dangerously-skip-permissions"' in t:
+        t = t.replace('        "--dangerously-skip-permissions",\n', '')
+        print('[boot] heartbeat_runner.py: --dangerously-skip-permissions removido (cleanup)')
+    if '"--allowedTools", "Bash(*) Read(*) Write(*) Edit(*) Skill(*) Agent(*)"' in t:
+        t = t.replace('        "--allowedTools", "Bash(*) Read(*) Write(*) Edit(*) Skill(*) Agent(*)",\n', '')
+        print('[boot] heartbeat_runner.py: --allowedTools wildcard removido (cleanup)')
 
     # Delete stale pyc cache
     cache_dir = pathlib.Path('/workspace/dashboard/backend/__pycache__')
@@ -828,5 +938,92 @@ if _env_file.exists():
             print('[boot] /workspace/.env: DASHBOARD_API_TOKEN ja correto')
     else:
         print('[boot] AVISO: DASHBOARD_API_TOKEN nao encontrado no ambiente, .env nao atualizado')
+
+# --- 11. Fix /root/.claude/settings.json: disable skipDangerousModePermissionPrompt + clear session cache ---
+_root_settings = pathlib.Path('/root/.claude/settings.json')
+try:
+    _rs = json.loads(_root_settings.read_text()) if _root_settings.exists() else {}
+    _changed_rs = False
+    # Remove skipDangerousModePermissionPrompt — openclaude adds --dangerously-skip-permissions
+    # when this is true, which fails as root even with IS_SANDBOX=1
+    if _rs.pop('skipDangerousModePermissionPrompt', None) is not None:
+        _changed_rs = True
+    # Remove any saved Codex provider profile that causes "Codex auth required" warnings
+    if _rs.pop('oauthAccount', None) is not None:
+        _changed_rs = True
+    if _rs.pop('activeProvider', None) is not None:
+        _changed_rs = True
+    if _changed_rs:
+        _root_settings.write_text(json.dumps(_rs, indent=2))
+        print('[boot] /root/.claude/settings.json: cleaned skipDangerousModePermissionPrompt + codex profile')
+    else:
+        print('[boot] /root/.claude/settings.json: already clean')
+except Exception as _e:
+    print(f'[boot] /root/.claude/settings.json: erro ao patchear: {_e}')
+
+# Clear stale openclaude session cache (causes "Codex auth required" on reuse of old sessions)
+_sessions_dir = pathlib.Path('/root/.claude/sessions')
+if _sessions_dir.exists():
+    import shutil as _shutil
+    try:
+        _shutil.rmtree(str(_sessions_dir))
+        _sessions_dir.mkdir()
+        print('[boot] /root/.claude/sessions: cache limpo (evita erro Codex auth)')
+    except Exception as _e:
+        print(f'[boot] /root/.claude/sessions: erro ao limpar: {_e}')
+
+# --- 12. Patch providers.json: switch terminal-server to OpenAI direct (gpt-4o-mini) ---
+_providers_json = pathlib.Path('/workspace/config/providers.json')
+if _providers_json.exists():
+    try:
+        _pj = json.load(open(_providers_json))
+        _openai_key = os.environ.get('OPENAI_API_KEY', '').strip()
+        _changed_pj = False
+
+        # Switch active provider to openai (direct, no OpenRouter overhead)
+        if _pj.get('active_provider') != 'openai':
+            _pj['active_provider'] = 'openai'
+            _changed_pj = True
+
+        # Ensure openai provider has correct key and model
+        if 'openai' in _pj.get('providers', {}):
+            _oa = _pj['providers']['openai']
+            _ev = _oa.get('env_vars', {})
+            _need = {
+                'CLAUDE_CODE_USE_OPENAI': '1',
+                'OPENAI_API_KEY': _openai_key,
+                'OPENAI_MODEL': 'gpt-4o-mini',
+                'OPENAI_BASE_URL': 'https://api.openai.com/v1',
+            }
+            for k, v in _need.items():
+                if _ev.get(k) != v and v:
+                    _ev[k] = v
+                    _changed_pj = True
+            _oa['env_vars'] = _ev
+        else:
+            _pj.setdefault('providers', {})['openai'] = {
+                'name': 'OpenAI (API Key)',
+                'description': 'GPT-4o-mini via OpenAI direto (sem intermediário)',
+                'cli_command': 'openclaude',
+                'env_vars': {
+                    'CLAUDE_CODE_USE_OPENAI': '1',
+                    'OPENAI_API_KEY': _openai_key,
+                    'OPENAI_MODEL': 'gpt-4o-mini',
+                    'OPENAI_BASE_URL': 'https://api.openai.com/v1',
+                },
+                'default_model': 'gpt-4o-mini',
+                'requires_logout': True,
+            }
+            _changed_pj = True
+
+        if _changed_pj:
+            json.dump(_pj, open(_providers_json, 'w'), indent=2, ensure_ascii=False)
+            print('[boot] providers.json: active_provider atualizado para openai/gpt-4o-mini')
+        else:
+            print('[boot] providers.json: ja configurado corretamente')
+    except Exception as _e:
+        print(f'[boot] providers.json: erro ao patchear: {_e}')
+else:
+    print('[boot] providers.json: arquivo nao encontrado, pulando patch')
 
 print('[boot] nexus-boot.py concluido')
