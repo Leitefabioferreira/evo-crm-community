@@ -32,7 +32,9 @@ Variáveis obrigatórias:
 |----------|-----------|
 | `EVONEXUS_SECRET_KEY` | `python3 -c "import secrets; print(secrets.token_hex(32))"` |
 | `DASHBOARD_API_TOKEN` | `python3 -c "import secrets; print(secrets.token_hex(32))"` |
-| `EVO_CRM_API_TOKEN` | UUID do token do Chatwoot |
+| `EVO_CRM_URL` | `http://evo-crm:3000` (padrão Docker Compose) |
+| `EVO_CRM_ACCOUNT_ID` | `1` (padrão Chatwoot single-tenant) |
+| `EVO_CRM_API_TOKEN` | Access Token do Chatwoot (Perfil → Access Token, **não** Bearer) |
 | `EVOLUTION_API_KEY` | API key da Evolution API |
 | `OPENAI_API_KEY` | `sk-proj-...` (OpenAI direto) |
 | `OPENROUTER_API_KEY` | `sk-or-v1-...` (fallback) |
@@ -73,6 +75,9 @@ Saída esperada:
 [boot] heartbeat_runner.py patched (7/7 fixes applied)
 [boot] /root/.claude/settings.json: already clean
 [boot] providers.json: active_provider atualizado para openai/gpt-4o-mini
+[boot] workspace.yaml: CRM config (Chatwoot API) adicionado
+[boot] levi-atendimento: interval 60s → 120s (TPM rate limit fix)
+[boot] levi-atendimento: max_turns 25 → 15 (TPM rate limit fix)
 [boot] nexus-boot.py concluido
 ```
 

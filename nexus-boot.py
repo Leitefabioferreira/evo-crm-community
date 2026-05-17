@@ -998,6 +998,7 @@ if _providers_json.exists():
                 'OPENAI_API_KEY': _openai_key,
                 'OPENAI_MODEL': 'gpt-4o-mini',
                 'OPENAI_BASE_URL': 'https://api.openai.com/v1',
+                'CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED': '1',
             }
             for k, v in _need.items():
                 if _ev.get(k) != v and v:
@@ -1014,6 +1015,7 @@ if _providers_json.exists():
                     'OPENAI_API_KEY': _openai_key,
                     'OPENAI_MODEL': 'gpt-4o-mini',
                     'OPENAI_BASE_URL': 'https://api.openai.com/v1',
+                    'CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED': '1',
                 },
                 'default_model': 'gpt-4o-mini',
                 'requires_logout': True,
@@ -1029,5 +1031,80 @@ if _providers_json.exists():
         print(f'[boot] providers.json: erro ao patchear: {_e}')
 else:
     print('[boot] providers.json: arquivo nao encontrado, pulando patch')
+
+# --- 13. Patch workspace.yaml: add CRM API config so Clawdia knows correct endpoints ---
+# Chatwoot API uses:  api_access_token: <token>  (not Bearer)
+# Correct endpoints:  /api/v1/accounts/{account_id}/conversations
+#                     /api/v1/accounts/{account_id}/contacts
+#                     /api/v1/accounts/{account_id}/contacts/search?q=<termo>
+_ws_yaml = pathlib.Path('/workspace/config/workspace.yaml')
+if _ws_yaml.exists():
+    try:
+        _ws_content = _ws_yaml.read_text()
+        _crm_url = os.environ.get('EVO_CRM_URL', 'http://evo-crm:3000')
+        _crm_block = f'''
+crm:
+  url: {_crm_url}
+  # Header de autenticacao: api_access_token (NAO Bearer)
+  # Exemplo: curl -H "api_access_token: <token>" http://evo-crm:3000/api/v1/contacts
+  api_header: api_access_token
+  api_token_env: EVO_CRM_API_TOKEN
+  endpoints:
+    profile:          /api/v1/profile
+    contacts:         /api/v1/contacts
+    contact_search:   /api/v1/contacts/search?q={{query}}
+    conversations:    /api/v1/conversations
+    conversation:     /api/v1/conversations/{{id}}
+    messages:         /api/v1/conversations/{{id}}/messages
+    send_message:     /api/v1/conversations/{{id}}/messages  (POST)
+    inboxes:          /api/v1/inboxes
+    labels:           /api/v1/labels
+    teams:            /api/v1/teams
+  # Paginacao: ?page=1  (padrao 20 itens por pagina)
+  # Status de conversa: open, resolved, pending
+  # Exemplo filtrar conversas abertas: /api/v1/conversations?status=open
+'''
+        if 'crm:' not in _ws_content:
+            _ws_yaml.write_text(_ws_content.rstrip() + '\n' + _crm_block)
+            print('[boot] workspace.yaml: CRM config (Chatwoot API) adicionado')
+        else:
+            print('[boot] workspace.yaml: CRM config ja presente')
+    except Exception as _e:
+        print(f'[boot] workspace.yaml: erro ao patchear: {_e}')
+else:
+    print('[boot] workspace.yaml: nao encontrado, pulando patch 13')
+
+# --- 14. Fix TPM rate limit: reduce Levi heartbeat interval 60s → 120s, max_turns 25 → 15 ---
+# Levi runs every 60s with ~28k-token prompts = ~28k TPM per run = ~28000*60/60 = 28k/min
+# Doubling the interval to 120s halves TPM consumption. max_turns 15 vs 25 = ~40% less tokens/run.
+_db_path = pathlib.Path('/workspace/dashboard/data/evonexus.db')
+if _db_path.exists():
+    try:
+        import sqlite3 as _sqlite3
+        _conn = _sqlite3.connect(str(_db_path))
+        _cur = _conn.cursor()
+        # Check current values first
+        _cur.execute("SELECT id, interval_seconds, max_turns FROM heartbeats WHERE id LIKE '%levi%'")
+        _levi_rows = _cur.fetchall()
+        _tpm_changed = False
+        for _hb_id, _iv, _mt in _levi_rows:
+            if _iv is not None and _iv < 120:
+                _cur.execute("UPDATE heartbeats SET interval_seconds = 120 WHERE id = ?", (_hb_id,))
+                print(f'[boot] {_hb_id}: interval {_iv}s → 120s (TPM rate limit fix)')
+                _tpm_changed = True
+            if _mt is None or _mt > 15:
+                _cur.execute("UPDATE heartbeats SET max_turns = 15 WHERE id = ?", (_hb_id,))
+                print(f'[boot] {_hb_id}: max_turns {_mt} → 15 (TPM rate limit fix)')
+                _tpm_changed = True
+        if not _levi_rows:
+            print('[boot] levi heartbeat nao encontrado no DB, pulando patch 14')
+        elif not _tpm_changed:
+            print('[boot] levi heartbeat: interval >= 120s + max_turns <= 15, ja correto')
+        _conn.commit()
+        _conn.close()
+    except Exception as _e:
+        print(f'[boot] levi heartbeat TPM patch: {_e}')
+else:
+    print('[boot] evonexus.db nao encontrado, pulando patch 14 (DB sera criado pelo dashboard)')
 
 print('[boot] nexus-boot.py concluido')
