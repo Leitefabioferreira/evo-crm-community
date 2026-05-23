@@ -1,0 +1,122 @@
+# EvoNexus — Stack standalone para VPS 2
+# Aponta para VPS 1 via domínios externos (EVO_CRM_URL, EVOLUTION_API_URL)
+#
+# Deploy:
+#   1. Copiar este arquivo + nexus-boot.py + nexus-nginx-vps2.conf + .env.nexus-vps2 para a VPS 2
+#   2. Renomear .env.nexus-vps2 → .env.nexus e preencher os valores
+#   3. docker compose -f docker-compose.nexus-vps2.yml up -d
+#   4. Após containers healthy: docker compose -f docker-compose.nexus-vps2.yml run --rm certbot certonly ...
+
+services:
+
+  # ── Dashboard principal (Flask + Node.js terminal) ─────────────────────────
+  nexus-dashboard:
+    image: evoapicloud/evo-nexus-dashboard:latest
+    container_name: nexus-dashboard
+    restart: unless-stopped
+    expose:
+      - "8080"
+      - "32352"
+    env_file: .env.nexus
+    environment:
+      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o-mini}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+      CLAUDE_CODE_USE_OPENAI: "${CLAUDE_CODE_USE_OPENAI:-1}"
+    command:
+      - bash
+      - -c
+      - |
+        pip3 install pyyaml websocket-client flask-limiter --break-system-packages -q 2>/dev/null || true
+        python3 /boot/nexus-boot.py
+        exec bash /usr/local/bin/start-dashboard.sh
+    volumes:
+      - nexus_config:/workspace/config
+      - nexus_workspace:/workspace/workspace
+      - nexus_data:/workspace/dashboard/data
+      - nexus_memory:/workspace/memory
+      - nexus_logs:/workspace/ADWs/logs
+      - nexus_venv:/workspace/.venv
+      - nexus_claude:/workspace/.claude
+      - ./nexus-boot.py:/boot/nexus-boot.py:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - nexus_net
+
+  # ── Scheduler (heartbeats / agentes automáticos) ───────────────────────────
+  nexus-scheduler:
+    image: evoapicloud/evo-nexus-runtime:latest
+    container_name: nexus-scheduler
+    restart: unless-stopped
+    env_file: .env.nexus
+    environment:
+      SERVICE_TYPE: scheduler
+      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4o-mini}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+      CLAUDE_CODE_USE_OPENAI: "${CLAUDE_CODE_USE_OPENAI:-1}"
+    command:
+      - bash
+      - -c
+      - |
+        python3 /workspace/config/scheduler-boot.py 2>/dev/null || true
+        uv run python scheduler.py
+    volumes:
+      - nexus_config:/workspace/config
+      - nexus_workspace:/workspace/workspace
+      - nexus_claude:/workspace/.claude
+      - nexus_logs:/workspace/ADWs/logs
+    depends_on:
+      nexus-dashboard:
+        condition: service_healthy
+    networks:
+      - nexus_net
+
+  # ── Nginx (reverse proxy + SSL) ────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: nexus-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nexus-nginx-vps2.conf:/etc/nginx/conf.d/default.conf:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
+    depends_on:
+      nexus-dashboard:
+        condition: service_healthy
+    networks:
+      - nexus_net
+
+  # ── Certbot (SSL gratuito via Let's Encrypt) ───────────────────────────────
+  certbot:
+    image: certbot/certbot:latest
+    container_name: nexus-certbot
+    restart: "no"
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done'
+    networks:
+      - nexus_net
+
+volumes:
+  nexus_config:
+  nexus_workspace:
+  nexus_data:
+  nexus_memory:
+  nexus_logs:
+  nexus_venv:
+  nexus_claude:
+  letsencrypt:
+  certbot_www:
+
+networks:
+  nexus_net:
+    name: nexus_net
+    driver: bridge

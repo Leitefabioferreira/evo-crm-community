@@ -1,2 +1,19 @@
 .env
 _evo*
+
+# EvoNexus secrets — never commit
+.env.nexus
+.env.nexus.local
+.env.evolution
+.env.evolution.local
+
+# Local backup and scratch files
+nexus-settings-backup.json
+pronta-resposta-playbook.md
+evo_crm_client_fixed.py
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
