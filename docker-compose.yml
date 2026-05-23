@@ -109,6 +109,8 @@ services:
     env_file: .env
     environment:
       RAILS_ENV: ${RAILS_ENV:-development}
+      RAILS_MAX_THREADS: "15"
+      WEB_CONCURRENCY: "0"
       REDIS_URL: redis://:${REDIS_PASSWORD:-evoai_redis_pass}@redis:6379/0
       POSTGRES_HOST: postgres
       EVO_AUTH_SERVICE_URL: http://evo-auth:3001
@@ -298,6 +300,50 @@ services:
       start_period: 15s
 
   # ---------------------------------------------------------------------------
+  # Evolution API v2 (Node.js) — Port 8081 host / 8080 container
+  # Reachable inside the stack as http://evolution-api:8080 (used by Nexus)
+  # ---------------------------------------------------------------------------
+  evolution-api:
+    image: evoapicloud/evolution-api:latest
+    container_name: evolution-api
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    env_file: .env.evolution
+    environment:
+      SERVER_PORT: "8080"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: "postgresql://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/evolution_api"
+      DATABASE_CONNECTION_CLIENT_NAME: evolution
+      DATABASE_SAVE_DATA_INSTANCE: "true"
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "true"
+      DATABASE_SAVE_MESSAGE_UPDATE: "true"
+      DATABASE_SAVE_DATA_CONTACTS: "true"
+      DATABASE_SAVE_DATA_CHATS: "true"
+      DATABASE_SAVE_DATA_HISTORIC: "true"
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: "redis://:${REDIS_PASSWORD:-evoai_redis_pass}@redis:6379/3"
+      CACHE_REDIS_PREFIX_KEY: evolution-cache
+      CACHE_REDIS_SAVE_INSTANCES: "true"
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:-13843d97a33afda28fdd04919c07ce7237c50d5bc93f235979cfd84af6ac0fd0}
+      LANGUAGE: pt-BR
+      LOG_LEVEL: ERROR,WARN,INFO
+      TZ: ${TZ:-America/Sao_Paulo}
+    volumes:
+      - evolution_api_instances:/evolution/instances
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # ---------------------------------------------------------------------------
   # Evolution Go — WhatsApp API (Go) — Port 4000
   # ---------------------------------------------------------------------------
   evolution-go:
@@ -339,5 +385,6 @@ volumes:
   crm_node_modules:
   crm_cache:
   processor_logs:
+  evolution_api_instances:
   evolution_go_data:
   evolution_go_logs:

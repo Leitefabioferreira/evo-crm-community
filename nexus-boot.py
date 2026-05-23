@@ -976,57 +976,46 @@ if _sessions_dir.exists():
     except Exception as _e:
         print(f'[boot] /root/.claude/sessions: erro ao limpar: {_e}')
 
-# --- 12. Patch providers.json: switch terminal-server to OpenAI direct (gpt-4o-mini) ---
+# --- 12. Patch providers.json: switch terminal-server to OpenAI direct ---
 _providers_json = pathlib.Path('/workspace/config/providers.json')
 if _providers_json.exists():
     try:
         _pj = json.load(open(_providers_json))
         _openai_key = os.environ.get('OPENAI_API_KEY', '').strip()
+        _openai_base = os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1').strip()
+        _openai_model = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini').strip()
         _changed_pj = False
 
-        # Switch active provider to openai (direct, no OpenRouter overhead)
+        # Switch active provider to openai (direct, sem intermediário)
         if _pj.get('active_provider') != 'openai':
             _pj['active_provider'] = 'openai'
             _changed_pj = True
 
-        # Ensure openai provider has correct key and model
-        if 'openai' in _pj.get('providers', {}):
-            _oa = _pj['providers']['openai']
-            _ev = _oa.get('env_vars', {})
-            _need = {
-                'CLAUDE_CODE_USE_OPENAI': '1',
-                'OPENAI_API_KEY': _openai_key,
-                'OPENAI_MODEL': 'gpt-4o-mini',
-                'OPENAI_BASE_URL': 'https://api.openai.com/v1',
-                'CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED': '1',
-            }
-            for k, v in _need.items():
-                if _ev.get(k) != v and v:
-                    _ev[k] = v
-                    _changed_pj = True
-            _oa['env_vars'] = _ev
-        else:
-            _pj.setdefault('providers', {})['openai'] = {
-                'name': 'OpenAI (API Key)',
-                'description': 'GPT-4o-mini via OpenAI direto (sem intermediário)',
-                'cli_command': 'openclaude',
-                'env_vars': {
-                    'CLAUDE_CODE_USE_OPENAI': '1',
-                    'OPENAI_API_KEY': _openai_key,
-                    'OPENAI_MODEL': 'gpt-4o-mini',
-                    'OPENAI_BASE_URL': 'https://api.openai.com/v1',
-                    'CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED': '1',
-                },
-                'default_model': 'gpt-4o-mini',
-                'requires_logout': True,
-            }
-            _changed_pj = True
+        # Ensure openai provider has correct key, base_url and model
+        _pj.setdefault('providers', {}).setdefault('openai', {})
+        _oa = _pj['providers']['openai']
+        _ev = _oa.get('env_vars', {})
+        _need = {
+            'CLAUDE_CODE_USE_OPENAI': '1',
+            'OPENAI_API_KEY': _openai_key,
+            'OPENAI_MODEL': _openai_model,
+            'OPENAI_BASE_URL': _openai_base,
+            'CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED': '1',
+        }
+        for k, v in _need.items():
+            if _ev.get(k) != v and v:
+                _ev[k] = v
+                _changed_pj = True
+        _oa['env_vars'] = _ev
+        _oa['default_model'] = _openai_model
+        _oa.setdefault('name', 'OpenAI (ChatGPT)')
+        _oa.setdefault('cli_command', 'openclaude')
 
         if _changed_pj:
             json.dump(_pj, open(_providers_json, 'w'), indent=2, ensure_ascii=False)
-            print('[boot] providers.json: active_provider atualizado para openai/gpt-4o-mini')
+            print(f'[boot] providers.json: active_provider=openai model={_openai_model}')
         else:
-            print('[boot] providers.json: ja configurado corretamente')
+            print('[boot] providers.json: ja configurado corretamente (openai)')
     except Exception as _e:
         print(f'[boot] providers.json: erro ao patchear: {_e}')
 else:
