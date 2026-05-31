@@ -109,7 +109,7 @@ services:
     env_file: .env
     environment:
       RAILS_ENV: ${RAILS_ENV:-development}
-      RAILS_MAX_THREADS: "15"
+      RAILS_MAX_THREADS: "30"
       WEB_CONCURRENCY: "0"
       REDIS_URL: redis://:${REDIS_PASSWORD:-evoai_redis_pass}@redis:6379/0
       POSTGRES_HOST: postgres
@@ -224,6 +224,9 @@ services:
       PORT: "8000"
       EVO_AI_CRM_URL: http://evo-crm:3000
       CORE_SERVICE_URL: http://evo-core:5555/api/v1
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      # ANTHROPIC_API_KEY já é passada pelo env_file: .env acima
     volumes:
       - processor_logs:/app/logs
     depends_on:
@@ -344,39 +347,53 @@ services:
       start_period: 40s
 
   # ---------------------------------------------------------------------------
-  # Evolution Go — WhatsApp API (Go) — Port 4000
+  # Evolution Watchdog — monitor e auto-recovery de containers críticos
   # ---------------------------------------------------------------------------
-  evolution-go:
-    image: evoapicloud/evolution-go:latest
-    container_name: evolution-go
+  evolution-watchdog:
+    image: docker:27-cli
     restart: unless-stopped
-    ports:
-      - "4000:4000"
-    environment:
-      SERVER_PORT: "4000"
-      CLIENT_NAME: evolution
-      GLOBAL_API_KEY: ${EVOLUTION_GO_API_KEY:-y5T27d2jMXJCZ9cSFq80R0JKkEkTEyrP3IvgtDIIKfk=}
-      POSTGRES_AUTH_DB: "postgresql://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD:-evoai_dev_password}@postgres:5432/evogo_auth?sslmode=disable"
-      POSTGRES_USERS_DB: "postgresql://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD:-evoai_dev_password}@postgres:5432/evogo_users?sslmode=disable"
-      DATABASE_SAVE_MESSAGES: "true"
-      CONNECT_ON_STARTUP: "false"
-      WEBHOOKFILES: "true"
-      QRCODE_MAX_COUNT: "5"
-      CHECK_USER_EXISTS: "true"
-      LOG_DIRECTORY: /app/logs
-      TZ: ${TZ:-America/Sao_Paulo}
+    entrypoint: sh /watchdog.sh
     volumes:
-      - evolution_go_data:/app/dbdata
-      - evolution_go_logs:/app/logs
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - ./watchdog-evolution.sh:/watchdog.sh:ro
     depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4000/manager/login"]
-      interval: 20s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+      - evolution-api
+
+  # ---------------------------------------------------------------------------
+  # Evolution Go — DESATIVADO (usando evolution-api v2 no lugar)
+  # Para reativar: descomentar este bloco e rodar docker compose up -d evolution-go
+  # ---------------------------------------------------------------------------
+  # evolution-go:
+  #   image: evoapicloud/evolution-go:latest
+  #   container_name: evolution-go
+  #   restart: unless-stopped
+  #   ports:
+  #     - "4000:4000"
+  #   environment:
+  #     SERVER_PORT: "4000"
+  #     CLIENT_NAME: evolution
+  #     GLOBAL_API_KEY: ${EVOLUTION_GO_API_KEY:-y5T27d2jMXJCZ9cSFq80R0JKkEkTEyrP3IvgtDIIKfk=}
+  #     POSTGRES_AUTH_DB: "postgresql://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD:-evoai_dev_password}@postgres:5432/evogo_auth?sslmode=disable"
+  #     POSTGRES_USERS_DB: "postgresql://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD:-evoai_dev_password}@postgres:5432/evogo_users?sslmode=disable"
+  #     DATABASE_SAVE_MESSAGES: "true"
+  #     CONNECT_ON_STARTUP: "false"
+  #     WEBHOOKFILES: "true"
+  #     QRCODE_MAX_COUNT: "5"
+  #     CHECK_USER_EXISTS: "true"
+  #     LOG_DIRECTORY: /app/logs
+  #     TZ: ${TZ:-America/Sao_Paulo}
+  #   volumes:
+  #     - evolution_go_data:/app/dbdata
+  #     - evolution_go_logs:/app/logs
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4000/manager/login"]
+  #     interval: 20s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 30s
 
 volumes:
   postgres_data:

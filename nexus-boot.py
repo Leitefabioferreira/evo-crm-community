@@ -9,6 +9,12 @@ if not shutil.which('make'):
 else:
     print('[boot] make ja disponivel')
 
+if not shutil.which('jq'):
+    subprocess.run(['apt-get', 'install', '-y', '-qq', 'jq'], capture_output=True)
+    print('[boot] jq instalado')
+else:
+    print('[boot] jq ja disponivel')
+
 # --- 1. Write .claude.json ---
 key = os.environ.get('ANTHROPIC_API_KEY', '')
 cfg = {
@@ -65,11 +71,35 @@ else:
     old4 = '            stdout, stderr = proc.communicate(timeout=timeout_seconds)'
     new4 = '            stdout, stderr = proc.communicate(input=prompt, timeout=timeout_seconds)'
 
-    # Patch 5: add --bare, remove --dangerously-skip-permissions
-    # --allowedTools is NOT used (Bash(*) wildcard triggers bypassPermissions mode which fails as root)
-    # Tool permissions are handled by /workspace/.claude/settings.json permissions.allow list
+    # Patch 5: add --bare, remove --dangerously-skip-permissions, add specific --allowedTools
+    # Bash(*) wildcard triggers bypassPermissions mode which fails as root.
+    # Instead we list specific Bash patterns that cover Levi's workflow.
+    # settings.json permissions.allow is NOT honoured by openclaude+OpenAI backend.
     old5 = '        "--print",\n        "--max-turns", str(max_turns),\n        "--dangerously-skip-permissions",\n        "--output-format", "json",\n'
-    new5 = '        "--print",\n        "--bare",\n        "--max-turns", str(max_turns),\n        "--output-format", "json",\n'
+    new5 = (
+        '        "--print",\n'
+        '        "--bare",\n'
+        '        "--max-turns", str(max_turns),\n'
+        '        "--output-format", "json",\n'
+        '        "--allowedTools", "Bash(python3 *)",\n'
+        '        "--allowedTools", "Bash(curl *)",\n'
+        '        "--allowedTools", "Bash(cat *)",\n'
+        '        "--allowedTools", "Bash(ls *)",\n'
+        '        "--allowedTools", "Bash(echo *)",\n'
+        '        "--allowedTools", "Bash(mkdir *)",\n'
+        '        "--allowedTools", "Bash(cp *)",\n'
+        '        "--allowedTools", "Bash(mv *)",\n'
+        '        "--allowedTools", "Bash(grep *)",\n'
+        '        "--allowedTools", "Bash(jq *)",\n'
+        '        "--allowedTools", "Bash(sed *)",\n'
+        '        "--allowedTools", "Bash(awk *)",\n'
+        '        "--allowedTools", "Bash(find *)",\n'
+        '        "--allowedTools", "Bash(git *)",\n'
+        '        "--allowedTools", "Bash(gog *)",\n'
+        '        "--allowedTools", "Read(*)",\n'
+        '        "--allowedTools", "Write(*)",\n'
+        '        "--allowedTools", "Edit(*)",\n'
+    )
 
     # Patch 6: multi-provider fallback + IS_SANDBOX bypass
     # Chain: OpenAI direct → OpenRouter paid → OpenRouter free
@@ -86,7 +116,7 @@ else:
             '        _log_hb = _log_p.getLogger("heartbeat_runner")\n'
             '\n'
             '        def _check_openai_compat(base_url, api_key, model):\n'
-            '            """Pre-flight for OpenAI-compatible endpoints (OpenAI, OpenRouter)."""\n'
+            '            """Pre-flight para endpoints OpenAI-compatíveis (apenas OpenRouter free)."""\n'
             '            try:\n'
             '                body = _json_p.dumps({"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode()\n'
             '                req = _urllib_req.Request(f"{base_url}/chat/completions", data=body,\n'
@@ -98,27 +128,9 @@ else:
             '            except Exception:\n'
             '                return False\n'
             '\n'
-            '        def _check_anthropic(api_key):\n'
-            '            """Pre-flight for Anthropic API (different auth/format from OpenAI)."""\n'
-            '            try:\n'
-            '                body = _json_p.dumps({"model": "claude-haiku-4-5", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode()\n'
-            '                req = _urllib_req.Request("https://api.anthropic.com/v1/messages", data=body,\n'
-            '                    headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"})\n'
-            '                with _urllib_req.urlopen(req, timeout=8) as r:\n'
-            '                    return r.status < 500\n'
-            '            except _urllib_err.HTTPError as ex:\n'
-            '                return ex.code not in (401, 402, 403, 429)\n'
-            '            except Exception:\n'
-            '                return False\n'
-            '\n'
-            '        # Provider chain — each entry: (label, check_fn, env_builder, cmd_modifier)\n'
-            '        # check_fn()      → bool: True = provider available\n'
-            '        # env_builder()   → dict: subprocess env\n'
-            '        # cmd_modifier()  → list: cmd with binary adjusted if needed\n'
-            '        _openai_key    = os.environ.get("OPENAI_API_KEY", "")\n'
-            '        _anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")\n'
+            '        # POLÍTICA: apenas modelos FREE do OpenRouter são permitidos.\n'
+            '        # Serviços pagos (OpenAI direct, Anthropic direct, OpenRouter pago) NÃO autorizados.\n'
             '        _openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")\n'
-            '        _claude_bin_path = shutil.which("claude") or ""\n'
             '\n'
             '        def _env_openai_compat(base_url, api_key, model):\n'
             '            e = dict(os.environ)\n'
@@ -127,49 +139,19 @@ else:
             '            e["OPENAI_BASE_URL"] = base_url\n'
             '            e["OPENAI_API_KEY"] = api_key\n'
             '            e["OPENAI_MODEL"] = model\n'
-            '            # Skip openclaude Codex profile detection (defaults to codexplan\n'
-            '            # when no .openclaude-profile.json exists → "Codex auth required" error)\n'
-            '            e["CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED"] = "1"\n'
-            '            return e\n'
-            '\n'
-            '        def _env_anthropic(api_key):\n'
-            '            e = dict(os.environ)\n'
-            '            e["IS_SANDBOX"] = "1"\n'
-            '            e.pop("CLAUDE_CODE_USE_OPENAI", None)\n'
-            '            e["ANTHROPIC_API_KEY"] = api_key\n'
             '            e["CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED"] = "1"\n'
             '            return e\n'
             '\n'
             '        _provider_chain = [\n'
-            '            # 1: OpenAI direct (sem intermediário, mais barato)\n'
-            '            ("OpenAI-direct/gpt-4o-mini",\n'
-            '             lambda: bool(_openai_key) and _check_openai_compat("https://api.openai.com/v1", _openai_key, "gpt-4o-mini"),\n'
-            '             lambda: _env_openai_compat("https://api.openai.com/v1", _openai_key, "gpt-4o-mini"),\n'
+            '            # 1: OpenRouter free — Gemma 4 26B (confirmado HTTP 200)\n'
+            '            ("OpenRouter-free/gemma-4-26b",\n'
+            '             lambda: bool(_openrouter_key) and _check_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "google/gemma-4-26b-a4b-it:free"),\n'
+            '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "google/gemma-4-26b-a4b-it:free"),\n'
             '             lambda c: c),\n'
-            '            # 2: Anthropic direct (claude-haiku-4-5) — ativo quando tiver crédito\n'
-            '            ("Anthropic-direct/claude-haiku-4-5",\n'
-            '             lambda: bool(_anthropic_key) and _check_anthropic(_anthropic_key),\n'
-            '             lambda: _env_anthropic(_anthropic_key),\n'
-            '             lambda c: [_claude_bin_path] + c[1:] if _claude_bin_path else c),\n'
-            '            # 3: OpenRouter pago → gpt-4o-mini\n'
-            '            ("OpenRouter/gpt-4o-mini",\n'
-            '             lambda: bool(_openrouter_key) and _check_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "openai/gpt-4o-mini"),\n'
-            '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "openai/gpt-4o-mini"),\n'
-            '             lambda c: c),\n'
-            '            # 4: OpenRouter → Claude haiku (usa saldo OpenRouter para pagar Anthropic)\n'
-            '            ("OpenRouter/claude-haiku-4-5",\n'
-            '             lambda: bool(_openrouter_key) and _check_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "anthropic/claude-haiku-4-5"),\n'
-            '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "anthropic/claude-haiku-4-5"),\n'
-            '             lambda c: c),\n'
-            '            # 5: OpenRouter free — Gemini\n'
-            '            ("OpenRouter-free/gemini-2.5-flash",\n'
-            '             lambda: bool(_openrouter_key) and _check_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "google/gemini-2.5-flash-preview-05-14:free"),\n'
-            '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "google/gemini-2.5-flash-preview-05-14:free"),\n'
-            '             lambda c: c),\n'
-            '            # 6: OpenRouter free — DeepSeek (último recurso)\n'
-            '            ("OpenRouter-free/deepseek-v4-flash",\n'
+            '            # 2: OpenRouter free — Nemotron 120B (fallback, confirmado HTTP 200)\n'
+            '            ("OpenRouter-free/nemotron-120b",\n'
             '             lambda: bool(_openrouter_key),\n'
-            '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "deepseek/deepseek-v4-flash:free"),\n'
+            '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "nvidia/nemotron-3-super-120b-a12b:free"),\n'
             '             lambda c: c),\n'
             '        ]\n'
             '\n'
@@ -186,8 +168,8 @@ else:
             '            except Exception as _e:\n'
             '                _log_hb.warning(f"[provider] {_label} check falhou: {_e}")\n'
             '        if _selected_env is None:\n'
-            '            _selected_env = _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "deepseek/deepseek-v4-flash:free")\n'
-            '            print("[provider] fallback final: deepseek free", flush=True)\n'
+            '            _selected_env = _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "nvidia/nemotron-3-super-120b-a12b:free")\n'
+            '            print("[provider] fallback final: nemotron free", flush=True)\n'
             '        proc = subprocess.Popen(\n'
             '            _selected_cmd,\n'
             '            stdin=subprocess.PIPE,\n'
@@ -216,7 +198,69 @@ else:
             '            "status": "fail",\n'
             '            "error": "claude/openclaude binary not found in PATH",')
 
-    for old, new in [(old1, new1), (old2, new2), (old3, new3), (old4, new4), (old5, new5), (old6, new6), (old7, new7)]:
+    # Patch 8: keep ANTHROPIC_API_KEY for openclaude auth validation; actual LLM calls use OPENAI_BASE_URL.
+    # Remove only OPENAI_API_KEY_DIRECT (a legacy env that could override the provider chain).
+    old8 = ('            e["CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED"] = "1"\n'
+            '            return e\n')
+    new8 = ('            e["CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED"] = "1"\n'
+            '            # Keep ANTHROPIC_API_KEY for openclaude auth validation; actual calls go via OPENAI_BASE_URL\n'
+            '            e.pop("OPENAI_API_KEY_DIRECT", None)\n'
+            '            return e\n')
+
+    # Patch 9: Add Groq provider to chain (priority 0, free, high limits)
+    # Only applies if the chain was already patched with Patch 6 (new6 style).
+    old9 = (
+        '        _openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")\n'
+        '\n'
+        '        def _env_openai_compat(base_url, api_key, model):\n'
+    )
+    new9 = (
+        '        _openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")\n'
+        '        _groq_key = os.environ.get("GROQ_API_KEY", "")\n'
+        '\n'
+        '        def _env_openai_compat(base_url, api_key, model):\n'
+    )
+
+    old9b = (
+        '        _provider_chain = [\n'
+        '            # 1: OpenRouter free — Gemma 4 26B (confirmado HTTP 200)\n'
+        '            ("OpenRouter-free/gemma-4-26b",\n'
+        '             lambda: bool(_openrouter_key) and _check_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "google/gemma-4-26b-a4b-it:free"),\n'
+        '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "google/gemma-4-26b-a4b-it:free"),\n'
+        '             lambda c: c),\n'
+        '            # 2: OpenRouter free — Nemotron 120B (fallback, confirmado HTTP 200)\n'
+        '            ("OpenRouter-free/nemotron-120b",\n'
+        '             lambda: bool(_openrouter_key),\n'
+        '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "nvidia/nemotron-3-super-120b-a12b:free"),\n'
+        '             lambda c: c),\n'
+        '        ]\n'
+    )
+    new9b = (
+        '        _provider_chain = [\n'
+        '            # 0: Groq (gratuito, alta velocidade) — prioridade maxima quando GROQ_API_KEY definida\n'
+        '            ("Groq/llama-3.3-70b",\n'
+        '             lambda: bool(_groq_key) and _check_openai_compat("https://api.groq.com/openai/v1", _groq_key, "llama-3.3-70b-versatile"),\n'
+        '             lambda: _env_openai_compat("https://api.groq.com/openai/v1", _groq_key, "llama-3.3-70b-versatile"),\n'
+        '             lambda c: c),\n'
+        '            # 0b: Groq fallback — llama-3.1-8b-instant\n'
+        '            ("Groq/llama-3.1-8b",\n'
+        '             lambda: bool(_groq_key),\n'
+        '             lambda: _env_openai_compat("https://api.groq.com/openai/v1", _groq_key, "llama-3.1-8b-instant"),\n'
+        '             lambda c: c),\n'
+        '            # 1: OpenRouter free — Gemma 4 26B (confirmado HTTP 200)\n'
+        '            ("OpenRouter-free/gemma-4-26b",\n'
+        '             lambda: bool(_openrouter_key) and _check_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "google/gemma-4-26b-a4b-it:free"),\n'
+        '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "google/gemma-4-26b-a4b-it:free"),\n'
+        '             lambda c: c),\n'
+        '            # 2: OpenRouter free — Nemotron 120B (fallback)\n'
+        '            ("OpenRouter-free/nemotron-120b",\n'
+        '             lambda: bool(_openrouter_key) and _check_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "nvidia/nemotron-3-super-120b-a12b:free"),\n'
+        '             lambda: _env_openai_compat("https://openrouter.ai/api/v1", _openrouter_key, "nvidia/nemotron-3-super-120b-a12b:free"),\n'
+        '             lambda c: c),\n'
+        '        ]\n'
+    )
+
+    for old, new in [(old1, new1), (old2, new2), (old3, new3), (old4, new4), (old5, new5), (old6, new6), (old7, new7), (old8, new8), (old9, new9), (old9b, new9b)]:
         if old in t:
             t = t.replace(old, new)
             changed += 1
@@ -251,7 +295,7 @@ if cb.exists():
             pyc.unlink(missing_ok=True)
 
     f.write_text(t)
-    print(f'[boot] heartbeat_runner.py patched ({changed}/7 fixes applied)')
+    print(f'[boot] heartbeat_runner.py patched ({changed}/10 fixes applied)')
 
 # --- 4. Ensure evo_utils package exists with all required methods ---
 evo_utils_dir = pathlib.Path('/workspace/evo_utils')
@@ -924,11 +968,13 @@ def webhook_heartbeat_trigger(heartbeat_id):
 # env var wins only if dotenv sees a non-empty existing os.environ entry; on first boot
 # the PID 1 env may not have the value if the container was started before .env.nexus was updated).
 # Solution: always sync DASHBOARD_API_TOKEN from os.environ into /workspace/.env at boot.
+# Also force PYTHONUNBUFFERED=1 so Flask/dispatcher logs appear immediately in docker logs.
 _env_file = pathlib.Path('/workspace/.env')
 if _env_file.exists():
     import re as _re
     _env_text = _env_file.read_text()
     _runtime_token = os.environ.get('DASHBOARD_API_TOKEN', '').strip()
+    _env_changed = False
     if _runtime_token:
         _env_text2 = _re.sub(
             r'(?m)^DASHBOARD_API_TOKEN=.*$',
@@ -936,12 +982,22 @@ if _env_file.exists():
             _env_text
         )
         if _env_text2 != _env_text:
-            _env_file.write_text(_env_text2)
+            _env_text = _env_text2
+            _env_changed = True
             print(f'[boot] /workspace/.env: DASHBOARD_API_TOKEN sincronizado ({_runtime_token[:8]}...)')
         else:
             print('[boot] /workspace/.env: DASHBOARD_API_TOKEN ja correto')
     else:
         print('[boot] AVISO: DASHBOARD_API_TOKEN nao encontrado no ambiente, .env nao atualizado')
+    # Ensure PYTHONUNBUFFERED=1 so logs flush immediately to docker logs (avoids buffering in pipes)
+    if 'PYTHONUNBUFFERED=' not in _env_text:
+        _env_text = _env_text.rstrip('\n') + '\nPYTHONUNBUFFERED=1\n'
+        _env_changed = True
+        print('[boot] /workspace/.env: PYTHONUNBUFFERED=1 adicionado')
+    if _env_changed:
+        _env_file.write_text(_env_text)
+    # Also set in current process environment so bootscript-spawned processes inherit it
+    os.environ['PYTHONUNBUFFERED'] = '1'
 
 # --- 11. Fix /root/.claude/settings.json: disable skipDangerousModePermissionPrompt + clear session cache ---
 _root_settings = pathlib.Path('/root/.claude/settings.json')
@@ -976,50 +1032,74 @@ if _sessions_dir.exists():
     except Exception as _e:
         print(f'[boot] /root/.claude/sessions: erro ao limpar: {_e}')
 
-# --- 12. Patch providers.json: switch terminal-server to OpenAI direct ---
+# --- 12. Patch providers.json: escolher melhor provider disponível para o terminal ---
+# Prioridade: OpenRouter (tem crédito garantido) → OpenAI (se tiver crédito)
+# Motivo: OpenAI pode estar sem crédito; OpenRouter é o provider confiável
 _providers_json = pathlib.Path('/workspace/config/providers.json')
 if _providers_json.exists():
     try:
         _pj = json.load(open(_providers_json))
-        _openai_key = os.environ.get('OPENAI_API_KEY', '').strip()
-        _openai_base = os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1').strip()
-        _openai_model = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini').strip()
+        _openrouter_key = os.environ.get('OPENROUTER_API_KEY', '').strip()
         _changed_pj = False
 
-        # Switch active provider to openai (direct, sem intermediário)
-        if _pj.get('active_provider') != 'openai':
-            _pj['active_provider'] = 'openai'
+        # POLÍTICA: apenas OpenRouter com modelos FREE é autorizado.
+        # OpenAI direct e Anthropic direct NÃO são usados (serviços pagos).
+        _FREE_MODEL = 'google/gemma-4-26b-a4b-it:free'
+        _target = 'openrouter'
+
+        if _pj.get('active_provider') != _target:
+            _pj['active_provider'] = _target
             _changed_pj = True
 
-        # Ensure openai provider has correct key, base_url and model
-        _pj.setdefault('providers', {}).setdefault('openai', {})
-        _oa = _pj['providers']['openai']
-        _ev = _oa.get('env_vars', {})
-        _need = {
+        # Garantir que openrouter está configurado com modelo free funcional
+        _pj.setdefault('providers', {}).setdefault('openrouter', {})
+        _or = _pj['providers']['openrouter']
+        _orev = _or.get('env_vars', {})
+        _or_need = {
             'CLAUDE_CODE_USE_OPENAI': '1',
-            'OPENAI_API_KEY': _openai_key,
-            'OPENAI_MODEL': _openai_model,
-            'OPENAI_BASE_URL': _openai_base,
+            'OPENAI_BASE_URL': 'https://openrouter.ai/api/v1',
+            'OPENAI_API_KEY': _openrouter_key or _orev.get('OPENAI_API_KEY', ''),
+            'OPENAI_MODEL': _FREE_MODEL,
             'CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED': '1',
         }
-        for k, v in _need.items():
-            if _ev.get(k) != v and v:
-                _ev[k] = v
+        for k, v in _or_need.items():
+            if v and _orev.get(k) != v:
+                _orev[k] = v
                 _changed_pj = True
-        _oa['env_vars'] = _ev
-        _oa['default_model'] = _openai_model
-        _oa.setdefault('name', 'OpenAI (ChatGPT)')
-        _oa.setdefault('cli_command', 'openclaude')
+        _or['env_vars'] = _orev
+        _or['default_model'] = _FREE_MODEL
 
         if _changed_pj:
             json.dump(_pj, open(_providers_json, 'w'), indent=2, ensure_ascii=False)
-            print(f'[boot] providers.json: active_provider=openai model={_openai_model}')
+            print(f'[boot] providers.json: active_provider={_target} model={_FREE_MODEL}')
         else:
-            print('[boot] providers.json: ja configurado corretamente (openai)')
+            print(f'[boot] providers.json: ja configurado (active={_pj.get("active_provider")})')
     except Exception as _e:
         print(f'[boot] providers.json: erro ao patchear: {_e}')
 else:
     print('[boot] providers.json: arquivo nao encontrado, pulando patch')
+
+# --- 13b. Patch openclaude model metadata: add free models so context window is known ---
+# Without this, openclaude warns "model not in integration model metadata" for gemma/nemotron free
+# and uses conservative 128k, sometimes causing context compaction failures.
+for _oc_file in ['/usr/lib/node_modules/@gitlawb/openclaude/dist/cli.mjs',
+                  '/usr/lib/node_modules/@gitlawb/openclaude/dist/sdk.mjs']:
+    _oc_path = pathlib.Path(_oc_file)
+    if _oc_path.exists():
+        _oc_text = _oc_path.read_text()
+        _gemma4_entry = '["google/gemma-4-26b-a4b-it:free", "Google Gemma 4 26B (Free)", 131072, 8192]'
+        _nemotron_entry = '["nvidia/nemotron-3-super-120b-a12b:free", "NVIDIA Nemotron 3 Super 120B (Free)", 131072, 32768]'
+        _anchor = '["google/gemma-3-27b-it", "Google Gemma 3 27B IT", 131072, 16384]'
+        if _anchor in _oc_text and _gemma4_entry not in _oc_text:
+            _replacement = f'{_gemma4_entry},\n    {_nemotron_entry},\n    {_anchor}'
+            _oc_path.write_text(_oc_text.replace(_anchor, _replacement))
+            print(f'[boot] {_oc_path.name}: gemma-4-26b + nemotron-120b free adicionados ao model metadata')
+        elif _gemma4_entry in _oc_text:
+            print(f'[boot] {_oc_path.name}: free models ja presentes no model metadata')
+        else:
+            print(f'[boot] {_oc_path.name}: anchor nao encontrado, pulando patch')
+    else:
+        print(f'[boot] {_oc_file}: nao encontrado')
 
 # --- 13. Patch workspace.yaml: add CRM API config so Clawdia knows correct endpoints ---
 # Chatwoot API uses:  api_access_token: <token>  (not Bearer)
@@ -1095,5 +1175,313 @@ if _db_path.exists():
         print(f'[boot] levi heartbeat TPM patch: {_e}')
 else:
     print('[boot] evonexus.db nao encontrado, pulando patch 14 (DB sera criado pelo dashboard)')
+
+# --- 15. Create /mnt/skills/user symlink → /workspace/.claude/skills ---
+_mnt_skills = pathlib.Path('/mnt/skills')
+_mnt_skills.mkdir(parents=True, exist_ok=True)
+_user_link = _mnt_skills / 'user'
+if not _user_link.exists():
+    import os as _os2
+    _os2.symlink('/workspace/.claude/skills', str(_user_link))
+    print('[boot] /mnt/skills/user → /workspace/.claude/skills criado')
+elif not _user_link.is_symlink():
+    print('[boot] /mnt/skills/user existe mas nao e symlink — pulando')
+else:
+    print('[boot] /mnt/skills/user symlink ja existe')
+
+# --- 16. Ensure longevos-recepcao heartbeat exists (persists across volume recreations) ---
+if _db_path.exists():
+    try:
+        import sqlite3 as _sqlite3_lv
+        _conn_lv = _sqlite3_lv.connect(str(_db_path))
+        _longevos_prompt = '''Voce e longevos-recepcao, especialista em recepcao da clinica Longevos Saude. MODO AUTOMATICO.
+
+Seu protocolo completo de atendimento esta no seu arquivo de identidade (ja carregado no contexto). Use-o para saber como conduzir cada conversa com empatia e acolhimento.
+
+=== PIPELINE LONGEVOS SAUDE ===
+Pipeline ID: 7e9f7f4c-69da-4ea4-8ce2-325a3768f63b
+Estagios:
+  1. Novo Contato:      9ba3bf48-4b7e-40c1-a703-b9b3b43ffb19
+  2. Acolhimento:       05474b3a-1568-4efc-a2ef-0868a0a5426c
+  3. Mapeando Objetivo: 5c4ba59f-712d-4272-be1f-0dac9c2a225b
+  4. Quebrando Objecoes:695f8a27-b8e3-4197-b464-1d048a5bffb6
+  5. Pronto p Agendar:  21ce3e66-9c32-4539-aba5-4f6c4fa72c0f
+  6. Agendamento:       5af44c5e-ce7c-442c-8e18-91ddafa93b72
+  7. Em Recuperacao:    1b2e7f1d-89a7-4d67-b1e2-4e4988cb6078
+  8. Consulta Agendada: bc11bbf4-d879-4263-b997-31f8d03b2bf7
+  9. Nao Compareceu:    aa5ef077-3f45-403f-8634-4f59d2056291
+ 10. Abandonado:        f8b36291-cfb1-4cde-9316-97d86c34e64a
+
+=== WORKFLOW ===
+
+PASSO 1 - Buscar itens ativos no pipeline Longevos:
+python3 /mnt/skills/user/int-evo-crm/scripts/evo_crm_client.py pipeline_items 7e9f7f4c-69da-4ea4-8ce2-325a3768f63b
+Filtrar: itens com conversation.status="open" e conversation.waiting_since != null.
+Ignorar: Abandonado (f8b36291), Consulta Agendada (bc11bbf4).
+Max 2 itens para processar.
+Se nenhum: retornar {"action":"skip","reason":"sem pacientes aguardando Longevos","conversations_processed":0,"stages_advanced":0}
+
+PASSO 2 - Para cada item (max 2):
+
+  [A] ANTI-SPAM - Verificar ultima mensagem:
+  curl -s -H "api_access_token: d069b81fe3ec21e9413a68da97202ac5c5d9d0e89000504a82602761dc8cdb31" "http://evo-crm:3000/api/v1/conversations/<CONV_ID>/messages?page=1"
+  SE ultima msg = outgoing ou AgentBot: PULE. Aguardar resposta do cliente.
+  SE message_type=incoming: continuar.
+
+  [B] AVANCAR ESTAGIO se cliente forneceu informacao relevante:
+  Analisar historico: o que o cliente ja disse?
+  - Se no Novo Contato e cliente ja respondeu: mover para Acolhimento
+  - Se em Acolhimento e cliente expressou objetivo de saude: mover para Mapeando Objetivo
+  - Se mapeando objetivo e cliente descreveu situacao: mover para Quebrando Objecoes
+  - Se cliente mostra resistencia/duvida (preco, tempo): permanecer em Quebrando Objecoes
+  - Se cliente quer agendar: mover para Pronto p Agendar
+  - Se data/hora confirmada: mover para Agendamento depois Consulta Agendada
+  python3 /mnt/skills/user/int-evo-crm/scripts/evo_crm_client.py move_item 7e9f7f4c-69da-4ea4-8ce2-325a3768f63b <ITEM_ID> --stage_id <NOVO_STAGE_ID>
+
+  [C] MONTAR RESPOSTA - UMA unica mensagem empatica e acolhedora:
+  Usar seu protocolo de identidade para o estagio atual.
+  Tom: carinhoso, profissional, focado na saude e bem-estar do cliente.
+  Estagios guia:
+  - Novo Contato/Acolhimento: apresentar a clinica, empatia inicial, perguntar objetivo de saude
+  - Mapeando Objetivo: explorar objetivo especifico (emagrecimento, hormonios, longevidade)
+  - Quebrando Objecoes: validar preocupacoes, apresentar beneficios, casos de sucesso
+  - Pronto p Agendar: propor opcoes de data/hora para consulta inicial
+  - Agendamento: confirmar data/hora, passar endereco/instrucoes
+  - Em Recuperacao: mensagem calorosa reengajando o interesse
+
+  [D] ENVIAR mensagem (phone SEM o +):
+  curl -s -X POST http://evolution-api:8080/message/sendText/teste -H "apikey: 13843d97a33afda28fdd04919c07ce7237c50d5bc93f235979cfd84af6ac0fd0" -H "Content-Type: application/json" -d "{\"number\":\"<PHONE_SEM_+>\",\"text\":\"<MENSAGEM>\"}"
+
+  [E] TICKET NEXUS:
+  curl -s "http://localhost:8080/api/tickets?status=open" -H "Authorization: Bearer 07e118a12aa32b9c29f100a4132d4855601196ee85b7dfdf3482724a663318be"
+  SE nao existe ticket para esta conversa:
+    curl -s -X POST "http://localhost:8080/api/tickets" -H "Content-Type: application/json" -H "Authorization: Bearer 07e118a12aa32b9c29f100a4132d4855601196ee85b7dfdf3482724a663318be" -d "{\"title\":\"Longevos #<DISPLAY_ID>: <CONTACT_NAME>\",\"description\":\"clinica=Longevos estagio=<STAGE_NAME> conv=<CONV_ID> phone=<PHONE>\",\"priority\":\"medium\",\"assignee_agent\":\"longevos-recepcao\",\"source_agent\":\"longevos-recepcao\"}"
+  SE ja existe: comentar:
+    curl -s -X POST "http://localhost:8080/api/tickets/<TICKET_ID>/comments" -H "Content-Type: application/json" -H "Authorization: Bearer 07e118a12aa32b9c29f100a4132d4855601196ee85b7dfdf3482724a663318be" -d "{\"body\":\"Longevos-recepcao: estagio=<STAGE> msg=<RESUMO>\"}"
+
+=== REGRAS ===
+1. UMA mensagem por conversa por execucao
+2. Skip se ultima msg = outgoing
+3. Phone sem + inicial
+4. Criar/atualizar ticket Nexus sempre
+
+Resposta JSON:
+{"action":"work","reason":"atendeu X pacientes Longevos Saude","conversations_processed":0,"stages_advanced":0}'''
+
+        _existing_lv = _conn_lv.execute(
+            "SELECT id, length(decision_prompt) FROM heartbeats WHERE id='longevos-recepcao'"
+        ).fetchone()
+        _now_lv = int(__import__('time').time())
+
+        if _existing_lv is None:
+            _conn_lv.execute(
+                """INSERT INTO heartbeats
+                   (id, agent, interval_seconds, max_turns, timeout_seconds, lock_timeout_seconds,
+                    wake_triggers, enabled, goal_id, required_secrets, decision_prompt, source_plugin,
+                    created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ('longevos-recepcao', 'longevos-recepcao', 900, 10, 600, 600,
+                 '["interval","manual"]', 1, None, None, _longevos_prompt, None, _now_lv, _now_lv)
+            )
+            print('[boot] longevos-recepcao: heartbeat CRIADO no banco')
+        elif _existing_lv[1] < 500:
+            _conn_lv.execute(
+                "UPDATE heartbeats SET decision_prompt=?, updated_at=? WHERE id='longevos-recepcao'",
+                (_longevos_prompt, _now_lv)
+            )
+            print('[boot] longevos-recepcao: prompt atualizado (era stub)')
+        else:
+            print(f'[boot] longevos-recepcao: ja existe com prompt real ({_existing_lv[1]}c)')
+
+        _conn_lv.commit()
+        _conn_lv.close()
+    except Exception as _e_lv:
+        print(f'[boot] longevos-recepcao setup: {_e_lv}')
+else:
+    print('[boot] longevos-recepcao: DB ainda nao existe, sera criado na primeira execucao')
+
+# --- 17. Boot-time stale lock cleanup + guardian lock_timeout sanity ---
+if _db_path.exists():
+    try:
+        import sqlite3 as _sqlite3_boot
+        _conn_boot = _sqlite3_boot.connect(str(_db_path))
+        _conn_boot.row_factory = _sqlite3_boot.Row
+
+        # 17a. Clear heartbeat_runs stuck as 'running' beyond their lock_timeout_seconds
+        _stale_heartbeats = _conn_boot.execute(
+            "SELECT id, lock_timeout_seconds FROM heartbeats WHERE lock_timeout_seconds IS NOT NULL"
+        ).fetchall()
+        _total_stale = 0
+        _now_boot = __import__('datetime').datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000000Z')
+        for _hb in _stale_heartbeats:
+            _hid = _hb['id']
+            _lts = _hb['lock_timeout_seconds']
+            _res = _conn_boot.execute(
+                """UPDATE heartbeat_runs
+                   SET status='fail', ended_at=?, error='Stale lock cleared on boot'
+                   WHERE heartbeat_id=? AND status='running'
+                     AND replace(replace(started_at,'T',' '),'Z','') < datetime('now', ? || ' seconds')""",
+                (_now_boot, _hid, f'-{_lts}')
+            )
+            if _res.rowcount:
+                print(f'[boot] stale lock cleanup: {_hid} cleared {_res.rowcount} stale run(s)')
+                _total_stale += _res.rowcount
+        if _total_stale == 0:
+            print('[boot] stale lock cleanup: nenhum lock stale encontrado')
+
+        # 17b. Ensure guardian-5m lock_timeout_seconds >= timeout_seconds (prevents stacking)
+        _g = _conn_boot.execute(
+            "SELECT timeout_seconds, lock_timeout_seconds FROM heartbeats WHERE id='guardian-5m'"
+        ).fetchone()
+        if _g and _g['lock_timeout_seconds'] < _g['timeout_seconds'] + 50:
+            _new_lts = _g['timeout_seconds'] + 50
+            _conn_boot.execute(
+                "UPDATE heartbeats SET lock_timeout_seconds=? WHERE id='guardian-5m'", (_new_lts,)
+            )
+            print(f"[boot] guardian-5m: lock_timeout_seconds corrigido para {_new_lts}")
+        elif _g:
+            print(f"[boot] guardian-5m: lock_timeout_seconds={_g['lock_timeout_seconds']} OK")
+
+        _conn_boot.commit()
+        _conn_boot.close()
+    except Exception as _e_boot:
+        print(f'[boot] patch 17 stale lock cleanup: {_e_boot}')
+else:
+    print('[boot] patch 17: DB ainda nao existe, pulando stale lock cleanup')
+
+# --- 18. Patch heartbeat_dispatcher.py: add lock check to prevent concurrent runs ---
+_dispatcher_path = pathlib.Path('/workspace/dashboard/backend/heartbeat_dispatcher.py')
+if _dispatcher_path.exists():
+    _disp_text = _dispatcher_path.read_text()
+    _disp_anchor = '    # Debounce check\n    debounced, existing_id = _is_debounced(heartbeat_id)'
+    _disp_lock_check = '''    # Lock check: skip if a run is still active within lock_timeout window
+    conn2 = _get_db()
+    try:
+        hb_cfg = conn2.execute(
+            "SELECT lock_timeout_seconds FROM heartbeats WHERE id = ?", (heartbeat_id,)
+        ).fetchone()
+        if hb_cfg and hb_cfg["lock_timeout_seconds"]:
+            _lts = hb_cfg["lock_timeout_seconds"]
+            active = conn2.execute(
+                """SELECT run_id FROM heartbeat_runs
+                   WHERE heartbeat_id = ? AND status = 'running'
+                     AND replace(replace(started_at,'T',' '),'Z','') > datetime('now', '-' || ? || ' seconds')
+                   LIMIT 1""",
+                (heartbeat_id, _lts),
+            ).fetchone()
+            if active:
+                print(f"[dispatcher] {heartbeat_id} locked (run {active['run_id']} still active), skipping", flush=True)
+                return False, None
+    finally:
+        conn2.close()
+
+    # Debounce check
+    debounced, existing_id = _is_debounced(heartbeat_id)'''
+    if _disp_anchor in _disp_text and _disp_lock_check not in _disp_text:
+        _dispatcher_path.write_text(_disp_text.replace(_disp_anchor, _disp_lock_check))
+        print('[boot] heartbeat_dispatcher.py: lock check adicionado')
+    elif _disp_lock_check in _disp_text:
+        print('[boot] heartbeat_dispatcher.py: lock check ja presente')
+    else:
+        print('[boot] heartbeat_dispatcher.py: ancora nao encontrada, pulando patch 18')
+else:
+    print('[boot] heartbeat_dispatcher.py nao encontrado, pulando patch 18')
+
+# --- 19. Patch MemPalace.tsx: fix variable shadowing (t) and add key props to tab sections ---
+_mempalace_src = pathlib.Path('/workspace/dashboard/frontend/src/pages/MemPalace.tsx')
+if _mempalace_src.exists():
+    _mp_text = _mempalace_src.read_text()
+    _mp_changed = False
+
+    # Fix 1: rename 't' loop variable in tabs.map to 'tabItem' to avoid shadowing useTranslation's 't'
+    if 'tabs.map((t) =>' in _mp_text:
+        _mp_text = _mp_text.replace('tabs.map((t) =>', 'tabs.map((tabItem) =>')
+        _mp_text = _mp_text.replace('key={t.key}', 'key={tabItem.key}')
+        _mp_text = _mp_text.replace('onClick={() => setTab(t.key)}', 'onClick={() => setTab(tabItem.key)}')
+        _mp_text = _mp_text.replace('tab === t.key', 'tab === tabItem.key')
+        _mp_text = _mp_text.replace('{t.label}', '{tabItem.label}')
+        _mp_changed = True
+        print('[boot] MemPalace.tsx: tabs.map variable shadowing corrigido')
+
+    # Fix 2: add stable key props to each tab section root div to prevent React InsertBefore errors
+    if 'key="tab-status"' not in _mp_text:
+        import re as _re
+        # After '{tab === 'status' && (' find the first <div className="space-y-6"> and add key
+        _mp_text = _re.sub(
+            r"(\{tab === 'status' && \(\s*)<div className=\"space-y-6\">",
+            r'\1<div key="tab-status" className="space-y-6">',
+            _mp_text, count=1
+        )
+        _mp_text = _re.sub(
+            r"(\{tab === 'sources' && \(\s*)<div className=\"space-y-6\">",
+            r'\1<div key="tab-sources" className="space-y-6">',
+            _mp_text, count=1
+        )
+        _mp_text = _re.sub(
+            r"(\{tab === 'search' && \(\s*)<div className=\"space-y-6\">",
+            r'\1<div key="tab-search" className="space-y-6">',
+            _mp_text, count=1
+        )
+        _mp_changed = True
+        print('[boot] MemPalace.tsx: key props adicionados nas secoes de tab')
+
+    if _mp_changed:
+        _mempalace_src.write_text(_mp_text)
+        print('[boot] MemPalace.tsx: arquivo atualizado')
+    else:
+        print('[boot] MemPalace.tsx: ja corrigido, sem alteracoes')
+
+    # --- Rebuild frontend if MemPalace source was changed ---
+    _frontend_dir = pathlib.Path('/workspace/dashboard/frontend')
+    _node_modules = _frontend_dir / 'node_modules'
+    _dist_dir = _frontend_dir / 'dist'
+    if _mp_changed:
+        print('[boot] Reconstruindo frontend apos patch MemPalace...')
+        import subprocess as _sp
+        try:
+            if not _node_modules.exists():
+                print('[boot] Instalando node_modules...')
+                _r = _sp.run(['npm', 'install'], cwd=str(_frontend_dir), capture_output=True, text=True, timeout=300)
+                print(f'[boot] npm install: {_r.returncode}')
+            _vite = str(_node_modules / '.bin' / 'vite')
+            _r2 = _sp.run([_vite, 'build'], cwd=str(_frontend_dir), capture_output=True, text=True, timeout=180)
+            if _r2.returncode == 0:
+                print('[boot] Frontend reconstruido com sucesso')
+            else:
+                print(f'[boot] Erro no build: {_r2.stderr[-500:]}')
+        except Exception as _e_build:
+            print(f'[boot] Erro no build frontend: {_e_build}')
+    else:
+        print('[boot] Frontend: sem mudancas no MemPalace, rebuild desnecessario')
+else:
+    print('[boot] MemPalace.tsx nao encontrado, pulando patch 19')
+
+# --- 20. Install gog CLI (Google OAuth Gateway for calendar/gmail/tasks skills) ---
+# gog is not a published npm/pip package — it is a custom Python CLI stored in
+# /workspace/.claude/bin/gog (nexus_claude persistent volume). On each boot we
+# ensure the binary is copied to /usr/local/bin/gog so it is on PATH.
+_gog_src  = pathlib.Path('/workspace/.claude/bin/gog')
+_gog_dest = pathlib.Path('/usr/local/bin/gog')
+
+if _gog_src.exists():
+    # Ensure executable bit on source
+    import stat as _stat
+    _gog_src.chmod(_gog_src.stat().st_mode | _stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH)
+    # Copy to /usr/local/bin on every boot (container tmpfs resets between restarts)
+    import shutil as _shutil
+    _shutil.copy2(str(_gog_src), str(_gog_dest))
+    _gog_dest.chmod(_gog_dest.stat().st_mode | _stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH)
+    print('[boot] gog: copiado /workspace/.claude/bin/gog -> /usr/local/bin/gog')
+    # Quick smoke test
+    import subprocess as _gog_sp
+    _gt = _gog_sp.run([str(_gog_dest), 'calendar', 'events', '--today', '--json'],
+                      capture_output=True, text=True, timeout=10)
+    if _gt.returncode == 0:
+        print(f'[boot] gog: smoke test ok (output: {_gt.stdout.strip()[:40]}...)')
+    else:
+        print(f'[boot] gog: smoke test falhou rc={_gt.returncode}: {_gt.stderr[:80]}')
+else:
+    print('[boot] gog: /workspace/bin/gog nao encontrado — pulando patch 20')
+    print('[boot] gog: Reinstale com: docker cp gog_cli.py <container>://workspace/bin/gog')
 
 print('[boot] nexus-boot.py concluido')
